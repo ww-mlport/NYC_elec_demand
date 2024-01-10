@@ -1,4 +1,4 @@
 ## NYC Electricity Demand Prediction
 ### Summary:
-  * Build ML prediction models (linear regression, decision tree, random forest, XGBoost) which predict hourly New York City electricity demand using weather, day and season variables
+  * Build and evaluate performance of ML models (linear regression, decision tree, random forest, XGBoost) which predict hourly electricity demand for New York City using weather, day and season variables
   * (Download HTML files to view)

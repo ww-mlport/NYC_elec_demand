@@ -1,5 +1,5 @@
 ---
-title: "NYC Hourly Electricity Demand Prediction - EDA and Data Tidying"
+title: "NYC Electricity Demand Prediction - EDA and Data Tidying"
 output: html_document
 ---
 ### Summary
@@ -8,15 +8,23 @@ output: html_document
 
 * Clean and format data for input into machine learning models that predict hourly electricity consumption in NYC (MWh)
 * Tasks:
-    1. Remove irrelevant columns, manage NAs/blank cells, outlier detection
-    2. EDA: covariance analysis
+    1. Remove irrelevant columns
+    2. Filter for only 2016 - 2019 (excl. COVID impacts)
+    3. Manage NAs/blank cells
+    4. Outlier detection
+    5. Add lagged demand variable
+    6. Add categorical variables (weekday/weekend & seasons)
+    6. EDA: covariance and ANOVA analysis
 
-#### Data
-* Timeframe: 2016-2019
+#### Raw Data
+* TimeFrame: Jul 2015 - Nov 2022
 * Features:
-    * Weather (124 variables incl. dry/wet temp, wind speed, humidity etc.) (Source: National Oceanic Atmospheric Association (NOAA))
+    * Monthly & daily averages, and hourly values for weather variables in NYC (124 variables incl. dry/wet temp, wind speed, humidity etc.) (Source: National Oceanic Atmospheric Association (NOAA))
 * Dependent Variable:
-    * Total electricity consumption for New York City (NYC) (MWh) (Source: U.S. Energy Information Administration)
+    * Hourly electricity consumption for New York City (NYC) (MWh) (Source: U.S. Energy Information Administration)
+
+#### Covariance Analysis Summary:
+* Weak linear relationships between numerical variables; ANOVA of categorical variables (weekday/weekend and seasons) suggest a statistically significant relationship with MWh
 
 ```{r, include=FALSE}
 library(tidyverse)
@@ -26,6 +34,7 @@ library(zoo)
 library(lubridate)
 library(ggplot2)
 library(corrplot)
+library(reshape2)
 
 weather <- read.csv(paste0 (wd, "NOAA_New York_Weather Data.csv"))
 demand <- read.csv(paste0 (wd, "Demand_for_New_York_Independent_System_Operator_(NYIS)_hourly_-_UTC_time.csv"), skip=4)
@@ -34,19 +43,16 @@ demand <- read.csv(paste0 (wd, "Demand_for_New_York_Independent_System_Operator_
 
 #### 1. Weather
 * View columns and remove irrelevant variables e.g. daily, monthly
+* Create separate date and hour columns
+* Remove duplicated dates/hours
+* Convert columns to date/numeric
+* Filter for only 2016 - 2019
 
-```{r}
+```{r, warning=FALSE}
 #print(colnames(weather))
 weather_filtered <- weather %>%
   select(-starts_with("Daily"), -starts_with("Monthly"), -starts_with("ShortDuration"),-starts_with("Backup")) %>%
-  select(-c(1,3:14,17,21,22,25:26,29:36))
-print(colnames(weather_filtered))
-```
-* Create seperate date and hour columns
-* Remove duplicated dates/hours
-* Convert columns to numeric
-
-```{r, warning=FALSE}
+  select(-c(1,3:14,17,21,22,24:26,29:36))
 # create date and hour columns
 weather_filtered <- weather_filtered %>%
   separate(DATE, into = c("date", "hour"), sep = "T")
@@ -54,35 +60,146 @@ weather_filtered$hour <- substr(weather_filtered$hour, 1, 2)
 # remove duplicates for the date and hour columns
 weather_filtered <- weather_filtered[!duplicated(weather_filtered[, c("date", "hour")], fromFirst = TRUE), ]
 # convert columns to numeric
-weather_filtered[, 3:10] <- lapply(weather_filtered[, 3:10], as.numeric)
+weather_filtered[, 2:10] <- lapply(weather_filtered[, 2:10], as.numeric)
+# convert date column to date format
+weather_filtered$date <- as.Date(weather_filtered$date)
+# filter for only 2016 - 2019
+weather_filtered <- weather_filtered %>%
+  filter(year(date) %in% c(2016, 2017, 2018, 2019))
+print(colnames(weather_filtered))
 ```
+
 #### 1.1 Weather NAs
 * Remove columns with > 15% NAs
-* Columns with < 15%: fill NAs with linear interpolation
+* Columns with < 15%:
+    * Check to see location of NAs
+* The decision was taken to remove the wind speed variable from the dataset due to:
+    1. Relatively high % of NAs which also occur in big blocks of missing data. Therefore, filling methods could be too speculative and unsatisfactory
+    2. Additionally, a review of research from previous studies indicates that wind speed does not hold high levels of explanatory power for electricity demand
+* Precipitation NAs:
+    * If value before and after in timestamp > 0 then linear interpolate, if not fill as 0
+* Fill NAs in remaining variable columns with linear interpolation
 
 ```{r}
+# show NAs
 nas <- colSums(is.na(weather_filtered))
 print(nas/nrow(weather_filtered)*100)
 # remove HourlyPressureChange, HourlyPressureTendency, HourlyWindGustSpeed because of high percentage of NAs
 weather_filtered <- weather_filtered %>% 
   select(-HourlyPressureChange,-HourlyPressureTendency,-HourlyWindGustSpeed)
-# fill remaining NAs using linear interpolation
+# check location of remaining columns with NAs
+melted_df <- melt(weather_filtered, id.vars = "date")
+ggplot(melted_df, aes(x = date, y = variable, fill = is.na(value))) +
+  geom_tile() +
+  scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "blue")) +
+  labs(title = "Missing Data Heatmap")
+# remove HourlyWindSpeed
+weather_filtered <- weather_filtered %>% 
+  select(-HourlyWindSpeed)
+#fill precipitation NAs with 0
+na_positions <- which(is.na(weather_filtered$HourlyPrecipitation) & lag(weather_filtered$HourlyPrecipitation) > 0 & lead(weather_filtered$HourlyPrecipitation) > 0)
+# linear interpolation for NAs at valid positions
+weather_filtered$HourlyPrecipitation_filled <- weather_filtered$HourlyPrecipitation
+weather_filtered$HourlyPrecipitation_filled[na_positions] <- approx(x = which(!is.na(weather_filtered$HourlyPrecipitation)), 
+                                               y = weather_filtered$HourlyPrecipitation[!is.na(weather_filtered$HourlyPrecipitation)],
+                                               xout = na_positions)$y
+# Replace remaining NAs with 0
+weather_filtered$HourlyPrecipitation_filled[is.na(weather_filtered$HourlyPrecipitation_filled)] <- 0
+#replace and remove column
+weather_filtered$HourlyPrecipitation <- weather_filtered$HourlyPrecipitation_filled
+weather_filtered <- weather_filtered %>% 
+  select(-HourlyPrecipitation_filled)
+#fill remaining NAs using linear interpolation
 na_columns <- colnames(weather_filtered)[colSums(is.na(weather_filtered)) > 0]
 weather_filtered[na_columns] <- na.approx(weather_filtered[na_columns])
-#check_nas <- colSums(is.na(weather_filtered))
-#print(check_nas)
-# still 4 rows of NAs, remove because low number and entire rows are NA
-weather_filtered <- na.omit(weather_filtered)
+#check nas
 check_nas <- colSums(is.na(weather_filtered))
 print(check_nas)
-#replace otulier in windspeed shown in graph by linear interpolation
-weather_filtered$HourlyWindSpeed[weather_filtered$HourlyWindSpeed == 2237] <- NA
-weather_filtered$HourlyWindSpeed <- na.approx(weather_filtered$HourlyWindSpeed)
+
+```
+#### 1.2 Weather Outlier Detection
+
+* Detect outliers for each variable using IQR and threshold value of 1.5:
+    * Low outliers = Q1 - 1.5 * IQR
+    * High outliers = Q3 + 1.5 * IQR
+* Precipitation outliers are mainly due to the fact that the majority of precipation values are 0 (most of the time it's not raining). A visual inspection of the graph shows the majority of the outliers are within reasonable bounds and occur at similar times of the year. Even the two largest outliers are within realms of possibility and therefore are not likely to represent technical malfunction. Therefore they are left in the dataset.
+* Similarly the extereme pressure outliers appear to occur at similar dates in the year and therefore not removed.
+
+```{r}
+#create duplicate df for plotting
+weather_plot <- data.frame(weather_filtered)
+#define function to classify rows
+detect_and_classify_outliers <- function(column) {
+  # Calculate IQR
+  q <- quantile(column, c(0.25, 0.75))
+  iqr <- q[2] - q[1]
+  # Define upper and lower bounds
+  lower_bound <- q[1] - 1.5 * iqr
+  upper_bound <- q[2] + 1.5 * iqr
+  # Identify and classify outliers
+  outliers <- column < lower_bound | column > upper_bound
+  
+  return(outliers)
+}
+
+# Loop through columns
+for (col in 3:6) {
+  column_name <- names(weather_plot)[col]
+  # Detect and classify outliers for each column
+  weather_plot[paste(column_name, "outlier", sep = "_")] <- detect_and_classify_outliers(weather_plot[[col]])
+}
+#combine date and time columns
+weather_plot$DateTime <- ymd(weather_plot$date) + hours(weather_plot$hour - 1)
+# plot outliers graph function for each variable
+plot_with_outliers <- function(df, col_name) {
+  ggplot(df, aes(x = DateTime, y = .data[[col_name]], color = .data[[paste(col_name, "outlier", sep = "_")]], group = 1)) +
+    geom_line() +
+    labs(title = col_name, x = "DateTime", y = "Column Values") +
+    scale_color_manual(values = c("FALSE" = "blue", "TRUE" = "red"))
+}
+
+# Loop through columns  and create a plot for each
+for (col in 3:6) {
+  column_name <- names(weather_plot)[col]
+  # Create a plot for each column
+  plot <- plot_with_outliers(weather_plot, column_name)
+  # Print the plot
+  print(plot)
+}
+
+```
+
+* Ensure all days have 24 hrs; fill in missing hours with last known value
+
+```{r warning=FALSE}
+# count number of days with 24 hrs
+demand_24hrs <- table(table(weather_filtered$date))
+#print(demand_24hrs)
+# Create new date range
+weather_filtered$DateTime <- ymd(weather_filtered$date) + hours(weather_filtered$hour - 1)
+weather_filtered$DateTime <- as.POSIXct(weather_filtered$DateTime)
+min_date <- as.POSIXct("2016-01-01 00:00:00")
+max_date <- as.POSIXct("2019-12-31 23:00:00")
+date_range_complete <- seq.POSIXt(min_date, max_date, by = "hour")
+date_range_complete <- data.frame(DateTime = date_range_complete)
+# Merge to keep date range complete
+weather_filtered <- merge(date_range_complete, weather_filtered, by = "DateTime", all.x = TRUE)
+# fill missing values from last known
+weather_filtered <- weather_filtered %>%
+  mutate_at(vars(4:7), ~ na.locf(., fromLast = TRUE))
+# separate date time and drop old date time columns
+weather_filtered <- weather_filtered %>% 
+  select(-date, -hour)
+weather_filtered <- weather_filtered %>%
+  separate(DateTime, into = c("date", "hour"), sep = " ")
+weather_filtered$hour <- substr(weather_filtered$hour, 1, 2)
+
 ```
 
 #### 2. Demand
 
 * Create date and hour columns in same format as weather df
+* Filter for 2016 - 2019
 
 ```{r}
 # create date and hour columns
@@ -91,10 +208,12 @@ demand$date <- sapply(split_datetime, "[[", 1)
 demand$hour <- sapply(split_datetime, "[[", 2)
 demand$hour <- gsub("H", "", demand$hour)
 demand <- demand %>% select(-Category)
-
 #convert data and hour column to same format as weather_df
 demand_date <- demand %>%
   mutate(date = format(as.Date(date, format = "%m/%d/%Y"), format = "%Y-%m-%d"))
+# filter years
+demand_date <- demand_date %>% 
+  filter(year(date) %in% c(2016, 2017, 2018, 2019))
 
 ```
 
@@ -106,13 +225,12 @@ demand_date <- demand %>%
 #check for NAs
 print(colSums(is.na(demand)))
 ```
-
 #### 2.2 Outliers
 
-* Detect outliers using IQR and threshold value of 1.5
+* Detect outliers using IQR and threshold value of 1.5:
     * Low outliers = Q1 - 1.5 * IQR
     * High outliers = Q3 + 1.5 * IQR
-* Low outliers: only 4 values of 0. Likely due to technical issue with measurement. Therefore, fill-in 0 values with linear interpolation.
+* Low outliers: only 3 values of 0. Likely due to technical issue with measurement. Therefore, fill-in 0 values with linear interpolation.
 * High outliers: as the graph below shows, the high outliers appear to be in the summer months, and are consistently high each year. Therefore, although representing outliers for the whole dataset, they are likely not outliers in the sense of technical errors etc. and so will not be removed from the dataset.
 
 ```{r}
@@ -138,29 +256,36 @@ demand_plot <- demand_plot %>%
 demand_plot$hour <- as.numeric(demand_plot$hour)
 demand_plot$DateTime <- ymd(demand_plot$date) + hours(demand_plot$hour - 1)
 demand_plot <- demand_plot %>% select(-date,-hour)
-demand_plot <- demand_plot %>%
-  arrange(source, DateTime)
+demand_plot <- demand_plot %>% arrange(source, DateTime)
 ggplot(demand_plot, aes(x = DateTime, y = MWh, colour = source, group = 1)) +
   geom_line() +
   labs(x = "Datetime", y = "MWh", title = "New York City Hourly Electrcity Demand (MWh) (July 2015 - November 2022)") +
   scale_color_manual(values = c("red", "blue"))
 
 ```
+#### 2.3 Lagged Demand Variable
+
+* Add 24 hr lagged electricity demand variable
+
+```{r}
+# create lagged 24hr variable
+demand_lag <- demand_date %>%
+  arrange(date, hour) %>%
+  mutate(lagged_MWh = ifelse(row_number() <= 24, MWh, lag(MWh, n = 24)))
+
+```
+
 
 #### 3. Merge datasets
 
 ```{r}
-master <- merge(weather_filtered, demand_date, by.x = c("date", "hour"), by.y = c("date", "hour"), all = FALSE)
+master <- merge(weather_filtered, demand_lag, by.x = c("date", "hour"), by.y = c("date", "hour"), all = FALSE)
 ```
 
-*Filtering:
-    * Filter for only 2016, 2017, 2018 and 2019 to avoid COVID affected years and incomplete 2015
+*Feature engineering:
     * Add weekend/weekday and seasons categorical variables
-* Final checks:
-    * Check almost all days have 24hrs (yes > 99% do)
 
 ```{r}
-
 # add days of the week
 master$date <- as.Date(master$date)
 master$dayofweek <- weekdays(master$date)
@@ -185,31 +310,18 @@ master$season <- sapply(master$date, season_func)
 #remove hourly reference from variable titles
 colnames(master) <- sub("Hourly", "", colnames(master))
 
-#find out how many days per year
-year_count <- master %>%
-  mutate(year = year(date),
-         day_of_year = yday(date))
-count_unique_days_per_year <- year_count %>%
-  group_by(year) %>%
-  summarize(unique_days_count = n_distinct(day_of_year))
-print(count_unique_days_per_year)
-
-master <- master %>%
-  filter(year(date) %in% c(2016, 2017, 2018, 2019))
-
-#check most days have 24hrs
-number_24hrs <- table(table(master$date))
-#yes > 99% do
 ```
 
 #### 4. Correlation Analysis
 #### 4.1 Pearson Correlation Coefficent Matrix
 * Plot a correlation matrix to analyse linear relationships between numeric variables
-* Result: plots show weak linear relationships between independent and dependent variables
+* Result: Except lagged MWh, plots show weak linear relationships
+* Weak relationships shown in graphs below
 
 ```{r}
 ## create a pearson correlation matrix and plot
 master_cor <- master %>% select(-date,-weekdayorweekend,-season)
+master_cor <- master_cor[, c(1:5, 7, 6)]
 master_cor$hour <- as.numeric(master_cor$hour)
 cor_matrix <- round(cor(master_cor), 1)
 corrplot(
@@ -223,20 +335,15 @@ corrplot(
 )
 ```
 
-#### 4.2 Variable Plots
-* View relationship between independent and dependent variables using scatter plots
-* As shown from the coefficients, weak correlation between variables and MWh
-
 ```{r}
-
 plots_list <- list()
 
-for (i in 1:8) {
-  p <- ggplot(master_cor, aes(x = master_cor[, 8], y = master_cor[, i])) +
+for (i in 1:7) {
+  p <- ggplot(master_cor, aes(x = master_cor[, 7], y = master_cor[, i])) +
     geom_point() +                    
     geom_smooth(method = "lm") +      
-    labs(x = names(master_cor)[8], y = names(master_cor)[i]) +  
-    ggtitle(paste(names(master_cor)[i], "vs.", names(master_cor)[8]))  
+    labs(x = names(master_cor)[7], y = names(master_cor)[i]) +  
+    ggtitle(paste(names(master_cor)[i], "vs.", names(master_cor)[7]))  
   
   plots_list[[i]] <- p
 }

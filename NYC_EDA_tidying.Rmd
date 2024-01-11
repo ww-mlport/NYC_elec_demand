@@ -26,7 +26,7 @@ library(zoo)
 library(lubridate)
 library(ggplot2)
 library(corrplot)
-wd <- "C:/Users/wwell/Documents/GitHub/demand_prediction_local/data/"
+
 weather <- read.csv(paste0 (wd, "NOAA_New York_Weather Data.csv"))
 demand <- read.csv(paste0 (wd, "Demand_for_New_York_Independent_System_Operator_(NYIS)_hourly_-_UTC_time.csv"), skip=4)
 

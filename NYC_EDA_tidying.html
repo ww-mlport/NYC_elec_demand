@@ -11,7 +11,7 @@
 
 
 
-<title>NYC Electricity Demand Prediction - EDA and Data Tidying</title>
+<title>NYC Electricity Demand Prediction - EDA and Data Preprocessing</title>
 
 <script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
 // be compatible with the behavior of Pandoc < 2.8).
@@ -349,7 +349,7 @@ display: none;
 
 
 <h1 class="title toc-ignore">NYC Electricity Demand Prediction - EDA and
-Data Tidying</h1>
+Data Preprocessing</h1>
 
 </div>
 
@@ -363,12 +363,16 @@ Data Tidying</h1>
 predict hourly electricity consumption in NYC (MWh)</li>
 <li>Tasks:
 <ol style="list-style-type: decimal">
-<li>Remove irrelevant columns</li>
-<li>Filter for only 2016 - 2019 (excl. COVID impacts)</li>
+<li>Variable selection</li>
+<li>Filter for 2016 - 2019 (excl. COVID impacts)</li>
 <li>Manage NAs/blank cells</li>
 <li>Outlier detection</li>
-<li>Add lagged demand variable</li>
-<li>Add categorical variables (weekday/weekend &amp; seasons)</li>
+<li>Feature Engineering:
+<ul>
+<li>24hr lagged MWh variable</li>
+<li>Weekday/weekend</li>
+<li>Seasons</li>
+</ul></li>
 <li>EDA: covariance and ANOVA analysis</li>
 </ol></li>
 </ul>
@@ -391,11 +395,12 @@ etc.) (Source: National Oceanic Atmospheric Association (NOAA))</li>
 </ul>
 </div>
 <div id="covariance-analysis-summary" class="section level4">
-<h4>Covariance Analysis Summary:</h4>
+<h4>Covariance Analysis Summary</h4>
 <ul>
-<li>Weak linear relationships between numerical variables; ANOVA of
-categorical variables (weekday/weekend and seasons) suggest a
-statistically significant relationship with MWh</li>
+<li>Weak linear relationships between numerical variables should be
+considered for regression model configuration</li>
+<li>ANOVA of categorical variables suggest a statistically significant
+relationship with MWh</li>
 </ul>
 </div>
 <div id="weather" class="section level4">

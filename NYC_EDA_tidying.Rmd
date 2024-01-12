@@ -1,5 +1,5 @@
 ---
-title: "NYC Electricity Demand Prediction - EDA and Data Tidying"
+title: "NYC Electricity Demand Prediction - EDA and Data Preprocessing"
 output: html_document
 ---
 ### Summary
@@ -8,12 +8,14 @@ output: html_document
 
 * Clean and format data for input into machine learning models that predict hourly electricity consumption in NYC (MWh)
 * Tasks:
-    1. Remove irrelevant columns
-    2. Filter for only 2016 - 2019 (excl. COVID impacts)
+    1. Variable selection
+    2. Filter for 2016 - 2019 (excl. COVID impacts)
     3. Manage NAs/blank cells
     4. Outlier detection
-    5. Add lagged demand variable
-    6. Add categorical variables (weekday/weekend & seasons)
+    5. Feature Engineering:
+        * 24hr lagged MWh variable
+        * Weekday/weekend
+        * Seasons
     6. EDA: covariance and ANOVA analysis
 
 #### Raw Data
@@ -23,8 +25,10 @@ output: html_document
 * Dependent Variable:
     * Hourly electricity consumption for New York City (NYC) (MWh) (Source: U.S. Energy Information Administration)
 
-#### Covariance Analysis Summary:
-* Weak linear relationships between numerical variables; ANOVA of categorical variables (weekday/weekend and seasons) suggest a statistically significant relationship with MWh
+#### Covariance Analysis Summary
+* Weak linear relationships between numerical variables should be considered for regression model configuration
+* ANOVA of categorical variables suggest a statistically significant relationship with MWh
+
 
 ```{r, include=FALSE}
 library(tidyverse)

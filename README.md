@@ -1,4 +1,5 @@
 ## NYC Electricity Demand Prediction
+* Please download htmls to view
 ### Summary
 * Predicting demand (load forecasting) is a fundamental activity for grid operators and electricity market participants. Accurate load forecasts help in planning and scheduling generation and transmission resources effectively.
 * This project evaluates the performance of 24-hour electricity load forecasting machine learning (ML) models for NYC using weather variables.

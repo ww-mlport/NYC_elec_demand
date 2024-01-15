@@ -1,0 +1,489 @@
+---
+title: "NYC Electrcity Load Forecast - ML Model Comparison"
+output: html_document
+---
+### Summary
+* Predicting demand (load forecasting) is a fundamental activity for grid operators and electricity market participants. Accurate load forecasts help in planning and scheduling generation and transmission resources effectively.
+* This project evaluates the performance of 24-hour electricity load forecasting machine learning (ML) models for NYC using weather variables.
+* (for detailed EDA and data preprocessing see NYC_EDA_preprocessing.html)
+
+#### Aim:
+* Build ML models capable of 24-hour ahead load forecasting with potential real-world application.
+* Choose variables for the models which would likely be available to forecasters 24-hours in advance i.e. given the accuracy of 24-hour ahead weather forecasts, weather forecast variables are considered acceptable.
+* Evaluate ML model performance.
+
+#### Models:
+* Baseline: decision tree (DT), linear regression (LR)
+* Advanced models: linear regression (LR) and XGBoost with tree-based boosting (xgboost)
+* (Models were chosen according to literature review of most popular ML models in similar projects)
+
+#### Data:
+* Hourly, 2016 - 2019
+* Independent variables:
+    * Weather = dry-bulb temperature, precipitation, humidity, pressure
+    * Time/date = month, hour
+    * Engineered Features:
+      * 24hr lag = all weather features, MWh
+    * Weekday/weekend
+* Dependent variable:
+    * Electricity demand (MWh)
+    
+#### Methodology:
+1. Split data into training and test sets and normalise values (train = 2016-2018, test = 2019)
+2. Build baseline models
+3. Build advanced models incl. polynomials and hyper/parameter tuning
+4. Evaluate performance
+
+#### Performance Evaluation Metrics:
+* Mean absolute error (MAE)
+* Mean squared error (MSE)
+* Root mean squared error (RMSE)
+* R-squared (R2)
+
+#### Results: Model evaluation
+
+* Key results:
+    * DT_base performs worst across all metrics on train and test sets
+    * Advanced LR model achieves better results than base LR without reducing generalisability on the test data
+    * The DT and both LR models maintain similar results on train and test sets suggesting robust performance on new, unseen data. They have therefore avoided overfitting
+    * Despite the reputation of xgbtree robustness against overfitting and the use of CV for model parameters, it appears the model is overfit due to a the compartively large difference between train and test metrics
+    * However, overall the XGBoost model achieves the best overall metrics
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(rpart)
+library(rpart.plot)
+library(gbm)
+library(dplyr)
+library(randomForest)
+library(xgboost)
+library(caret)
+library(ggplot2)
+library(chillR)
+
+master <- read.csv(paste0 (wd, "master.csv"))
+master <- subset(master, !(year == 2016 & month == 2 & day == 29))
+# convert columns to factors
+columns_to_factor <- c("year", "month", "day", "hour", "weekdayorweekend")
+master[columns_to_factor] <- lapply(master[columns_to_factor], factor)
+
+```
+
+#### 1. Split Dataset and Normalise
+
+* Train = 2016, 2017, 2018
+* Test = 2019
+
+```{r}
+#split data into train and test
+train <- master %>%
+  filter(year %in% c(2016, 2017, 2018)) %>% 
+  select(-year, -day)
+test <- master %>% 
+  filter(year == 2019) %>% 
+  select(-year, -day)
+#scale results
+numeric_columns <- sapply(train, is.numeric)
+data_sets <- list(train, test)
+for (i in seq_along(data_sets)) {
+  data_sets[[i]][, numeric_columns] <- scale(data_sets[[i]][, numeric_columns])
+}
+train <- data_sets[[1]]
+test <- data_sets[[2]]
+
+```
+
+#### 2. Baseline Model Building
+
+##### 2.1 Decision Tree & Linear regression
+
+* These metrics will be compared against advanced model performance
+
+```{r}
+# baseline decision tree
+baseline_dt <- rpart(MWh ~ ., data = train,
+            minsplit = 10,
+            minbucket = 2,
+            cp = 0.01)
+# baseline Linear Regression
+baseline_lr <- lm(MWh ~ ., data = train)
+# predictions
+train_predictions_base <- train %>% select(MWh)
+models <- list(baseline_dt, baseline_lr)
+for (i in 1:length(models)) {
+  predictions <- as.data.frame(predict(models[[i]], newdata = train))
+  model_name <- c("DT", "LR")[i]
+  names(predictions)[1] <- paste(model_name,"train",sep = "_")
+  train_predictions_base <- cbind(train_predictions_base, predictions)
+}
+
+# extract true values and model estimates
+true_values <- train_predictions_base[, 1]
+model_estimates <- train_predictions_base[, 2:3]
+# Create data frame to store results
+evaluation_results <- data.frame(Model = character(0), MAE = numeric(0), MSE = numeric(0), RMSE = numeric(0), R2 = numeric(0))
+model_names <- c("DT_base", "LR_base")
+# loop and calculate evaluation train metrics
+for (i in 1:length(model_names)) {
+  model_name <- model_names[i]
+  predictions <- model_estimates[, i]
+  mae <- mean(abs(predictions - true_values))
+  mse <- mean((predictions - true_values)^2)
+  rmse <- sqrt(mse)
+  r_squared <- 1 - (sum((predictions - true_values)^2) / sum((mean(true_values) - true_values)^2))
+  result_row <- data.frame(Model = model_name, MAE = mae, MSE = mse, RMSE = rmse, R2 = r_squared)
+  evaluation_results <- rbind(evaluation_results, result_row)
+}
+evaluation_results <- pivot_longer(evaluation_results, cols = -Model, names_to = "column_name", values_to = "value")
+evaluation_results_train <- pivot_wider(evaluation_results, names_from = Model, values_from = value)
+
+## calculate test metrics
+# predictions
+test_predictions_base <- test %>% select(MWh)
+for (i in 1:length(models)) {
+  predictions <- as.data.frame(predict(models[[i]], newdata = test))
+  model_name <- c("DT", "LR")[i]
+  names(predictions)[1] <- paste(model_name,"train",sep = "_")
+  test_predictions_base <- cbind(test_predictions_base, predictions)
+}
+
+# extract true values and model estimates
+true_values <- test_predictions_base[, 1]
+model_estimates <- test_predictions_base[, 2:3]
+# Create data frame to store results
+base_results_test <- data.frame(Model = character(0), MAE = numeric(0), MSE = numeric(0), RMSE = numeric(0), R2 = numeric(0))
+model_names <- c("DT_base", "LR_base")
+# loop and calculate evaluation metrics
+for (i in 1:length(model_names)) {
+  model_name <- model_names[i]
+  predictions <- model_estimates[, i]
+  mae <- mean(abs(predictions - true_values))
+  mse <- mean((predictions - true_values)^2)
+  rmse <- sqrt(mse)
+  r_squared <- 1 - (sum((predictions - true_values)^2) / sum((mean(true_values) - true_values)^2))
+  result_row <- data.frame(Model = model_name, MAE = mae, MSE = mse, RMSE = rmse, R2 = r_squared)
+  base_results_test <- rbind(base_results_test, result_row)
+}
+base_results_test <- pivot_longer(base_results_test, cols = -Model, names_to = "column_name", values_to = "value")
+base_results_test <- pivot_wider(base_results_test, names_from = Model, values_from = value)
+print(evaluation_results_train)
+print(base_results_test)
+
+```
+#### 3. Advanced Models
+##### 3.1 Advanced Linear Regression
+
+* Polynomial - add polynomials to 5th degree for dry bulb temperature as EDA plot revealed non-linear relationship
+* Review MSE for polynomials, select appropriate polynomial feature
+* Build advanced LR model
+
+```{r, warning=FALSE}
+# add polynomial for drybulb temperature
+column_name <- "DryBulbTemperature"
+train_poly_df <- as.data.frame(poly(train[, column_name], 5, raw = TRUE))
+colnames(train_poly_df) <- paste(column_name, 1:5, sep="_")
+# test
+test_poly_df <- as.data.frame(poly(test[, column_name], 5, raw = TRUE))
+colnames(test_poly_df) <- paste(column_name, 1:5, sep="_")
+# combine the original train & test and the polynomial features
+train_poly <- cbind(train, train_poly_df)
+test_poly <- cbind(test, test_poly_df)
+
+# dependent variable
+response_variable <- "MWh"
+exclude_columns <- c(response_variable)
+drybulb_columns <- grep("^DryBulbTemperature_", names(train_poly), value = TRUE)
+independent_variables <- setdiff(names(train_poly), c(exclude_columns, drybulb_columns))
+# list to store results
+lm_models <- list()
+mse_values <- list()
+# loop over different polynomial degrees
+for (degree in 1:5) {
+  formula <- as.formula(paste(response_variable, "~", paste(c(paste("DryBulbTemperature", 1:degree, sep = "_"), independent_variables), collapse = "+")))
+  lm_model <- lm(formula, data = train_poly)
+  lm_models[[as.character(degree)]] <- lm_model
+  predictions <- predict(lm_model, newdata = train_poly)
+  residuals <- residuals(lm_model)
+  mse <- mean(residuals^2)
+  mse_values[[as.character(degree)]] <- mse
+}
+# plot mse values for different poly degrees
+plot(1:length(lm_models), mse_values, type = "b", xlab = "Poly", ylab = "MSE", main = "MSE vs DryBulbTemp Poly")
+# select 2 polynomial,  add to train
+train_padd <- cbind(train, train_poly_df["DryBulbTemperature_2"])
+
+```
+
+* Train advanced LR model using poly 2 and save metrics
+
+```{r}
+# train advanced lm model
+LR_advance <- lm(MWh ~ ., data = train_padd)
+# predict using train set
+lra_train_predict <- predict(LR_advance, newdata = train_padd)
+# calculate metrics for predictions
+mae_LR_advance <- mean(abs(train_padd$MWh - lra_train_predict))
+mse_LR_advance <- mean((train_padd$MWh - lra_train_predict)^2)
+rmse_LR_advance <- sqrt(mean((train_padd$MWh - lra_train_predict)^2))
+r_sq_LR_advance <- cor(train_padd$MWh, lra_train_predict)^2
+#add to evaluation_results_train
+variable_names <- c("mae_LR_advance", "mse_LR_advance", "rmse_LR_advance", "r_sq_LR_advance")
+for (i in seq_along(variable_names)) {
+  metric_index <- match(evaluation_results_train$column_name[i], names(evaluation_results_train))
+  evaluation_results_train[i, "LR_advance"] <- get(variable_names[i])
+}
+
+```
+
+
+* Evaluate advanced LR model on test set data and save metrics
+
+```{r}
+#add poly2 to test set
+test_padd <- cbind(test, test_poly_df["DryBulbTemperature_2"])
+# predict using test set
+lra_test_predict <- predict(LR_advance, newdata = test_padd)
+# calculate metrics for predictions
+mae_lr_advance_test <- mean(abs(test_padd$MWh - lra_test_predict))
+mse_lr_advance_test <- mean((test_padd$MWh - lra_test_predict)^2)
+rmse_lr_advance_test <- sqrt(mean((test_padd$MWh - lra_test_predict)^2))
+r_sq_lr_advance_test <- cor(test_padd$MWh, lra_test_predict)^2
+# create results df
+eval_results_test <- data.frame(
+  metrics = c("MAE", "MSE", "RMSE", "R2"),
+  LR_advance_test = c(mae_lr_advance_test, mse_lr_advance_test, rmse_lr_advance_test, r_sq_lr_advance_test)
+)
+
+```
+
+##### 3.2 Advanced XGBoost
+
+* Build XGBoost advanced model using XGBtree and cross-validation random search to optimise parameters based on RMSE
+
+```{r}
+# create encoded columns
+train_month <- train_padd %>% select(month)
+encoded_matrix_month <- as.data.frame(model.matrix(~ 0 + ., data = train_month))
+train_hour <- train_padd %>% select(hour)
+encoded_matrix_hour <- as.data.frame(model.matrix(~ 0 + ., data = train_hour))
+train_weekdayorweekend <- train_padd %>% select(weekdayorweekend)
+encoded_matrix_weekdayorweekend <- as.data.frame(model.matrix(~ 0 + ., data = train_weekdayorweekend))
+# bind encoded
+train_encoded <- cbind(train_padd, encoded_matrix_month, encoded_matrix_weekdayorweekend,encoded_matrix_hour) %>% select(-month,-hour,-weekdayorweekend)
+# set parameters
+n_samples <- 10
+param_grid <- data.frame(
+  nrounds = sample(100:300, n_samples, replace = TRUE),
+  max_depth = sample(3:10, n_samples, replace = TRUE),
+  eta = runif(n_samples, 0.01, 0.3),
+  gamma = runif(n_samples, 0, 2),
+  colsample_bytree = runif(n_samples, 0.7, 0.9),
+  subsample = runif(n_samples, 0.7, 0.9),
+  min_child_weight = sample(1:5, n_samples, replace = TRUE)
+)
+
+# perform cross-validation with grid search
+set.seed(123)
+ctrl <- trainControl(method = "cv", number = 5)
+# define the model
+model <- train(
+  x = train_encoded[, -10],                      
+  y = train_encoded[, 10],                        
+  method = "xgbTree",                   
+  trControl = ctrl,                     
+  tuneGrid = param_grid,                
+  metric = "RMSE"                       
+)
+
+# select best model and its parameters
+best_model <- model$bestTune
+# train model using best parameters
+xgb <- xgboost(
+  data = as.matrix(train_encoded[, -10]),         
+  label = train_encoded[, 10],                    
+  nrounds = best_model$nrounds,
+  max_depth = best_model$max_depth,
+  eta = best_model$eta,
+  gamma = best_model$gamma,
+  colsample_bytree = best_model$colsample_bytree,
+  subsample = best_model$subsample,
+  min_child_weight = best_model$min_child_weight
+)
+# print summary
+xgb_var_info <- xgb.importance(model = xgb)
+#print(xgb_var_info)
+
+```
+
+* Evaluate XGBoost performance on training and test sets
+
+```{r}
+# predict using train set
+train_predictions <- train_padd %>% select(MWh)
+xgb_train_predictions <- predict(xgb, as.matrix(train_encoded[, -10]))
+names(xgb_train_predictions)[1] <- "XGB_train"
+train_predictions <- cbind(train_predictions, xgb_train_predictions)
+# calculate metrics for predictions
+mae_xgb_train <- mean(abs(train_predictions$MWh - xgb_train_predictions))
+mse_xgb_train <- mean((train_predictions$MWh - xgb_train_predictions)^2)
+rmse_xgb_train <- sqrt(mean((train_predictions$MWh - xgb_train_predictions)^2))
+r_sq_xgb_train <- cor(train_predictions$MWh, xgb_train_predictions)^2
+#add to evaluation_results_train
+variable_names <- c("mae_xgb_train", "mse_xgb_train", "rmse_xgb_train", "r_sq_xgb_train")
+for (i in seq_along(variable_names)) {
+  metric_index <- match(evaluation_results_train$column_name[i], names(evaluation_results_train))
+  evaluation_results_train[i, "xgb"] <- get(variable_names[i])
+}
+
+#test encoded
+test_month <- test_padd %>% select(month)
+encoded_matrix_month <- as.data.frame(model.matrix(~ 0 + ., data = test_month))
+test_hour <- test_padd %>% select(hour)
+encoded_matrix_hour <- as.data.frame(model.matrix(~ 0 + ., data = test_hour))
+test_weekdayorweekend <- test_padd %>% select(weekdayorweekend)
+encoded_matrix_weekdayorweekend <- as.data.frame(model.matrix(~ 0 + ., data = test_weekdayorweekend))
+test_encoded <- cbind(test_padd, encoded_matrix_month, encoded_matrix_weekdayorweekend,encoded_matrix_hour) %>% select(-month,-hour,-weekdayorweekend)
+# predict using test set
+test_predictions <- test_padd %>% select(MWh)
+xgb_test_predictions <- predict(xgb, as.matrix(test_encoded[, -10]))
+names(xgb_test_predictions)[1] <- "XGB_test"
+test_predictions <- cbind(test_predictions, xgb_test_predictions)
+# calculate metrics for predictions
+mae_xgb_test <- mean(abs(test_predictions$MWh - xgb_test_predictions))
+mse_xgb_test <- mean((test_predictions$MWh - xgb_test_predictions)^2)
+rmse_xgb_test <- sqrt(mean((test_predictions$MWh - xgb_test_predictions)^2))
+r_sq_xgb_test <- cor(test_predictions$MWh, xgb_test_predictions)^2
+#add to eval_results_test
+variable_names <- c("mae_xgb_test", "mse_xgb_test", "rmse_xgb_test", "r_sq_xgb_test")
+for (i in seq_along(variable_names)) {
+  metric_index <- match(eval_results_test$column_name[i], names(eval_results_test))
+  eval_results_test[i, "xgb"] <- get(variable_names[i])
+}
+
+```
+
+#### 4. Evaluate Model Performance
+##### 4.1 Plot results
+
+* Compare metrics for different models on train and test sets
+* Key results:
+    * DT_base performs worst across all metrics on train and test sets
+    * Advanced LR model achieves better results than base LR without reducing generalisability on the test data
+    * The DT and both LR models maintain similar results on train and test sets suggesting robust performance on new, unseen data. They have therefore avoided overfitting
+    * Despite the reputation of xgbtree robustness against overfitting and the use of CV for model parameters, it appears the model is overfit due to a the comparatively large difference between train and test metrics
+    * However, overall the XGBoost model achieves the best overall metrics
+
+```{r}
+# combine test results
+eval_results_test <- cbind(eval_results_test, base_results_test[2:3])
+colnames(eval_results_test)[colnames(eval_results_test) == "LR_advance_test"] <- "LR_advance"
+colnames(evaluation_results_train)[colnames(evaluation_results_train) == "column_name"] <- "metrics"
+combined_test_train <- bind_rows(
+  mutate(eval_results_test, dataset = "Test"),
+  mutate(evaluation_results_train, dataset = "Train")
+)
+column_order <- c("metrics", "DT_base", "LR_base", "LR_advance", "xgb", "dataset")
+combined_test_train <- combined_test_train %>%
+  select(all_of(column_order)) %>% 
+  filter(metrics != "R2")
+# Reshape the data
+combined_tt <- combined_test_train %>%
+  pivot_longer(cols = c("DT_base", "LR_base", "LR_advance", "xgb"),
+               names_to = "model",
+               values_to = "value")
+combined_tt$model <- factor(combined_tt$model, levels = c("DT_base", "LR_base", "LR_advance", "xgb"))
+
+combined_tt$metrics <- factor(combined_tt$metrics, levels = c("MAE", "MSE", "RMSE"))
+
+# Plotting using ggplot2 with facet_grid
+error_metrics <- ggplot(combined_tt, aes(x = model, y = value, fill = factor(dataset, levels = c("Train", "Test")))) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), color = "black") +
+  geom_text(aes(label = sprintf("%0.2f", value), y = value),
+            position = position_dodge(width = 1),
+            vjust = 1.25,
+            size = 3,
+            fontface = "bold") +
+  facet_grid(metrics ~ ., scales = "free_y", switch = "both", space = "free") +
+  labs(title = "Metric Comparison",
+       x = "Model",
+       y = "Metric Value",
+       fill = "") +  # Remove legend title
+  theme_minimal() +
+  theme(panel.spacing.y = unit(2, "lines")) +
+  theme(legend.position = "right", strip.placement = "outside")
+
+#R2
+combined_test_train <- bind_rows(
+  mutate(eval_results_test, dataset = "Test"),
+  mutate(evaluation_results_train, dataset = "Train")
+)
+column_order <- c("metrics", "DT_base", "LR_base", "LR_advance", "xgb", "dataset")
+combined_test_train <- combined_test_train %>%
+  select(all_of(column_order)) %>% 
+  filter(metrics == "R2")
+combined_tt <- combined_test_train %>%
+  pivot_longer(cols = c("DT_base", "LR_base", "LR_advance", "xgb"),
+               names_to = "model",
+               values_to = "value")
+combined_tt$model <- factor(combined_tt$model, levels = c("DT_base", "LR_base", "LR_advance", "xgb"))
+
+r2_metrics <- ggplot(combined_tt, aes(x = model, y = value, fill = factor(dataset, levels = c("Train", "Test")))) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), color = "black") +
+  geom_text(aes(label = sprintf("%0.2f", value), y = value),
+            position = position_dodge(width = 1),
+            vjust = 1.25,
+            size = 3,
+            fontface = "bold") +
+  facet_grid(metrics ~ ., scales = "free_y", switch = "both", space = "free") +
+  labs(title = "Metric Comparison",
+       x = "Model",
+       y = "Metric Value",
+       fill = "") +  # Remove legend title
+  theme_minimal() +
+  theme(panel.spacing.y = unit(2, "lines")) +
+  theme(legend.position = "right", strip.placement = "outside")
+
+print(error_metrics)
+print(r2_metrics)
+
+```
+
+#### 4.2 Plot Actual vs. Predicted Test Results
+
+* Plot the results of the advanced LR and XGboost models vs. actual MWh for 2019
+
+```{r}
+#create plot df
+plot <- master %>%
+  filter(year %in% c(2019)) %>% 
+  select(year, month, day, hour)
+actual_test <- test$MWh
+plot <- cbind(plot, actual_test, lra_test_predict, xgb_test_predictions)
+names(plot)[1:4] <- c('Year', 'Month', 'Day', 'Hour')
+plot <- add_date(plot)
+plot <- plot %>% select(-Year, -Month, -Day, -Hour)
+plot <- plot %>% rename(Actual = actual_test)
+plot_long <- tidyr::gather(plot, key = "model", value = "MWh", -Date)
+model_names <- unique(plot_long$model)
+# plot
+plots <- lapply(model_names, function(model_name) {
+  if (model_name != "Actual") {
+    p <- ggplot(data = plot_long[plot_long$model %in% c(model_name, "Actual"), ], 
+                aes(x = Date, y = MWh, color = model)) +
+      geom_line(alpha = 0.7) +
+      labs(title = paste("Comparison of Actual MWh Demand and", model_name),
+           x = "Date and Hour",
+           y = "MWh") +
+      theme_minimal()
+    return(p)
+  }
+})
+# Print
+for (i in 1:length(plots)) {
+  if (!is.null(plots[[i]])) {
+    print(plots[[i]])
+  }
+}
+```

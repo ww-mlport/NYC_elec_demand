@@ -15,7 +15,6 @@ output: html_document
     5. Feature Engineering:
         * 24hr lagged MWh variable
         * Weekday/weekend
-        * Seasons
     6. EDA: covariance and ANOVA analysis
 
 #### Raw Data
@@ -127,7 +126,7 @@ print(check_nas)
     * Low outliers = Q1 - 1.5 * IQR
     * High outliers = Q3 + 1.5 * IQR
 * Precipitation outliers are mainly due to the fact that the majority of precipation values are 0 (most of the time it's not raining). A visual inspection of the graph shows the majority of the outliers are within reasonable bounds and occur at similar times of the year. Even the two largest outliers are within realms of possibility and therefore are not likely to represent technical malfunction. Therefore they are left in the dataset.
-* Similarly the extereme pressure outliers appear to occur at similar dates in the year and therefore not removed.
+* Similarly the extereme pressure outliers appear to occur at similar dates in the year and therefore are not removed.
 
 ```{r}
 #create duplicate df for plotting
@@ -267,52 +266,60 @@ ggplot(demand_plot, aes(x = DateTime, y = MWh, colour = source, group = 1)) +
   scale_color_manual(values = c("red", "blue"))
 
 ```
-#### 2.3 Lagged Demand Variable
-
-* Add 24 hr lagged electricity demand variable
-
-```{r}
-# create lagged 24hr variable
-demand_lag <- demand_date %>%
-  arrange(date, hour) %>%
-  mutate(lagged_MWh = ifelse(row_number() <= 24, MWh, lag(MWh, n = 24)))
-
-```
-
 
 #### 3. Merge datasets
 
-```{r}
-master <- merge(weather_filtered, demand_lag, by.x = c("date", "hour"), by.y = c("date", "hour"), all = FALSE)
-```
-
 *Feature engineering:
-    * Add weekend/weekday and seasons categorical variables
+    * Add 24 hour lagged variables for each numerical variable
+    * Add weekend/weekday and month categorical variables
 
 ```{r}
-# add days of the week
-master$date <- as.Date(master$date)
-master$dayofweek <- weekdays(master$date)
-master$weekdayorweekend <- ifelse(master$dayofweek %in% c("Saturday", "Sunday"), "Weekend", "Weekday")
-master <- master %>% select(-dayofweek)
-
-#add season
-season_func <- function(date) {
-  month <- as.integer(format(date, "%m"))
-  
-  if (month >= 3 && month <= 5) {
-    return("Spring")
-  } else if (month >= 6 && month <= 8) {
-    return("Summer")
-  } else if (month >= 9 && month <= 11) {
-    return("Autumn")
-  } else {
-    return("Winter")
+#merge
+master <- merge(weather_filtered, demand_date, by.x = c("date", "hour"), by.y = c("date", "hour"), all = FALSE)
+# create lagged 24, 25 and 26 hours variables
+columns_to_lag <- colnames(master[, !(colnames(master) %in% c("date", "hour"))])
+# lag hours
+lag_hours <- c(24)
+# loop through each column and each lag hour
+master_lag = data.frame(master)
+for (col in columns_to_lag) {
+  for (lag_hour in lag_hours) {
+    lagged_col_name <- paste0("lag_", col, "_", lag_hour, "hr")
+    master_lag <- master_lag %>%
+      arrange(date, hour) %>%
+      mutate(!!lagged_col_name := ifelse(row_number() <= lag_hour, !!sym(col), lag(!!sym(col), n = lag_hour)))
   }
 }
-master$season <- sapply(master$date, season_func)
+
+# add days of the week
+master_lag$date <- as.Date(master_lag$date)
+master_lag$dayofweek <- weekdays(master_lag$date)
+master_lag$weekdayorweekend <- ifelse(master_lag$dayofweek %in% c("Saturday", "Sunday"), "Weekend", "Weekday")
+master_lag <- master_lag %>% select(-dayofweek)
+# add month column
+master_lag <- master_lag %>%
+  separate(date, into = c("year", "month", "day"), sep = "-")
+
+#add season
+# season_func <- function(date) {
+#   month <- as.integer(format(date, "%m"))
+#   
+#   if (month >= 3 && month <= 5) {
+#     return("Spring")
+#   } else if (month >= 6 && month <= 8) {
+#     return("Summer")
+#   } else if (month >= 9 && month <= 11) {
+#     return("Autumn")
+#   } else {
+#     return("Winter")
+#   }
+# }
+# master$season <- sapply(master$date, season_func)
 #remove hourly reference from variable titles
-colnames(master) <- sub("Hourly", "", colnames(master))
+colnames(master_lag) <- sub("Hourly", "", colnames(master_lag))
+master_lag <- master_lag %>% select(-MWh,everything())
+columns_to_factor <- c("year", "month", "day", "hour", "weekdayorweekend")
+master_lag[columns_to_factor] <- lapply(master_lag[columns_to_factor], factor)
 
 ```
 
@@ -320,34 +327,33 @@ colnames(master) <- sub("Hourly", "", colnames(master))
 #### 4.1 Pearson Correlation Coefficent Matrix
 * Plot a correlation matrix to analyse linear relationships between numeric variables
 * Result: Except lagged MWh, plots show weak linear relationships
-* Weak relationships shown in graphs below
+* Weak linear relationships confirmed in graphs below
 
 ```{r}
 ## create a pearson correlation matrix and plot
-master_cor <- master %>% select(-date,-weekdayorweekend,-season)
-master_cor <- master_cor[, c(1:5, 7, 6)]
-master_cor$hour <- as.numeric(master_cor$hour)
+master_cor <- master_lag %>% select(-year,-month,-day,-hour, -weekdayorweekend)
 cor_matrix <- round(cor(master_cor), 1)
+par(mar = c(2, 2, 2, 2))
 corrplot(
-  cor_matrix, 
-  method = "color", 
+  cor_matrix,
+  method = "color",
   col = colorRampPalette(c("white", "red"))(100),
-  type = "upper",    
-  tl.col = "black",  
+  type = "upper",
+  tl.col = "black",
   tl.srt = 45,
-  addCoef.col = "black",  
+  tl.cex = 0.7,
+  addCoef.col = "black",
+  number.cex = 0.7
 )
-```
-
-```{r}
+# plot linear
 plots_list <- list()
 
-for (i in 1:7) {
-  p <- ggplot(master_cor, aes(x = master_cor[, 7], y = master_cor[, i])) +
+for (i in 1:10) {
+  p <- ggplot(master_cor, aes(x = master_cor[, 10], y = master_cor[, i])) +
     geom_point() +                    
     geom_smooth(method = "lm") +      
-    labs(x = names(master_cor)[7], y = names(master_cor)[i]) +  
-    ggtitle(paste(names(master_cor)[i], "vs.", names(master_cor)[7]))  
+    labs(x = names(master_cor)[10], y = names(master_cor)[i]) +  
+    ggtitle(paste(names(master_cor)[i], "vs.", names(master_cor)[10]))  
   
   plots_list[[i]] <- p
 }
@@ -358,15 +364,17 @@ for (i in 1:length(plots_list)) {
 
 ```
 
+
 #### 4.3 Perform ANOVA on categorical variables vs MWh
 
 * Result: the low p values suggest a statistically significant effect of these variables on the dependent variable
 
 ```{r}
 # perform ANOVA analysis for the categorical variables
-anova_weekdayorweekend <- aov(MWh ~ weekdayorweekend, data = master)
-anova_season <- aov(MWh ~ season, data = master)
+anova_weekdayorweekend <- aov(MWh ~ weekdayorweekend, data = master_lag)
+anova_month <- aov(MWh ~ month, data = master_lag)
 print(summary(anova_weekdayorweekend))
-print(summary(anova_season))
+print(summary(anova_month))
+#write.csv(master_lag, file = paste0 (wd, "master.csv"), row.names = FALSE)
 ```
 
